@@ -77,12 +77,14 @@ class SymFile(metaclass=Singleton):
         for entry in self.symbols:
             # print(entry)
             symbol = entry.symbol
-            if type(entry.symbol) is syms.SourceLineBeginSymbol:
+            if type(entry.symbol) is syms.SourceLineBeginSymbol or type(entry.symbol) is syms.FunctionSymbol:
                 if not self.source_files.get(symbol.file) and symbol.file is not None:  # Some SourceLineBeginSymbols don't actually have a filename attached to them or whatever reason
                     self.source_files[symbol.file] = SourceFile(symbol.file)
                     self.source_files[symbol.file].set_line(symbol.line[0])
                     print("Current File Changed, object was: ", entry)
                     curr_file = symbol.file
+                if type(entry.symbol) is syms.FunctionSymbol:
+                    self.source_files[curr_file].add_symbol(entry)
             elif entry.symbol is None:  # Some symbol entries are just a label, and don't actually have any other data attached to them. We ignore these when generating source files
                 pass
             else:

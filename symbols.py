@@ -23,20 +23,20 @@ _PRIMITIVE_TYPES: List[str] = [
     'float',
     'double',
     'struct',
-    'uniondef',
+    'union',
     'enum',
     'enummember',
-    'uchar',
-    'ushort',
-    'uint',
-    'ulong'
+    'unsigned char',
+    'unsigned short',
+    'unsigned int',
+    'unsigned long'
 ]
 
 _SYMBOL_TYPES = {
     -1: "EndFunction",
     0:  "Null",
     1:  "AutoVar",
-    2:  "External", 
+    2:  "Extern", 
     3:  "Static",
     4:  "Register",
     5:  "ExternalDefinition",
@@ -155,7 +155,7 @@ class ArraySymbol(SymbolABC):
         self.cls = struct.unpack("<h", file_input.read(2))[0]
         self._type_modifier = struct.unpack("<H", file_input.read(2))[0]
         self.type_modifiers = [_TYPE_MODIFIERS[(self._type_modifier >> (x * 2 + 4)) & 3] for x in range(0, 6)]
-        self.cls_name = _PRIMITIVE_TYPES[self._type_modifier & 0x0F]
+        self.cls_name = _SYMBOL_TYPES.get(self.cls)
         self.length, self.n_dims = struct.unpack("<ih", file_input.read(6))
         self.dims = []
         for i in range(0, self.n_dims):
@@ -166,15 +166,16 @@ class ArraySymbol(SymbolABC):
 
     @property
     def type_name(self):
-        return _PRIMITIVE_TYPES[self.cls & 0x0F]
+        return _PRIMITIVE_TYPES[self._type_modifier & 0x0F]
     
     @property
     def is_fake(self):
         return re.match(r"\.\d+fake", self.tag) is not None
 
     def __str__(self):
+        pointers = self.type_modifiers.count(('pointer', '*{}'))
         if not self.is_fake:
-            p1 = f"{self.cls_name} {self.tag if self.tag is not None else ''} {self.name}"
+            p1 = f"{self.type_name} {self.tag if self.tag is not None else ''} {'*' * pointers}{self.name}"
         else:
             actual_type = symdump.SymFile().type_definitions[self.tag]
             p1 = str(actual_type)
@@ -192,6 +193,9 @@ class ArraySymbol(SymbolABC):
 
     def get_arg_string(self):
         return str(self)
+    @property
+    def is_function(self):
+        return False
 
 class FunctionEndSymbol(SymbolABC):
     def __init__(self, file_input: io.BytesIO):
@@ -215,10 +219,15 @@ class FunctionSymbol(SymbolABC):
 
 
     def __str__(self):
+        # TODO: Clean this up, is a mess
         indent_amount = 0
         curr_line = 0
         func_def = symdump.SymFile().type_definitions[self.name]
-        return_type = str(func_def.type_name)
+        return_type = ''
+        if func_def.type_name == 'struct':
+            return_type = next(typedef for typedef in symdump.SymFile().type_definitions.values() if type(typedef) is ArraySymbol and typedef.tag == func_def.tag).name
+        else:
+            return_type = str(func_def.type_name)
         arg_strings = ", ".join([str(x)[:-1] for x in self.args])  # Remove the ; from the normal string represetatoin
         blocks = io.StringIO()
         for symbol in [sym for sym in self.children if sym not in self.args]:
@@ -226,20 +235,20 @@ class FunctionSymbol(SymbolABC):
                 blocks.write(('\t' * indent_amount) + '{\n')
                 indent_amount += 1
             elif type(symbol.symbol) is BlockEndSymbol:
-                blocks.write(('\t' * indent_amount) + '}\n')
                 indent_amount -= 1
+                blocks.write(('\t' * (indent_amount)) + '}\n')
             elif type(symbol) is not None:
                 symbol_lines = str(symbol.symbol).splitlines(True)
                 symbol_lines = [('\t' * indent_amount) + x + '\n' for x in symbol_lines]
                 blocks.writelines(symbol_lines)
         blocks.seek(0)
         out = """{return_type} {func_name}({args}) {{
-    {blocks}
+\t{blocks}
 }}""".format(
     return_type = return_type,
     func_name = self.name,
     args=arg_strings,
-    blocks="".join(blocks.readlines()[:-1])
+    blocks="\t".join(blocks.readlines()[:-1])
     )
         return out
 
@@ -297,11 +306,15 @@ class DefinitionSymbol(SymbolABC):
         return hash((self.cls, self.sz, self._type, self.name, self.children))
 
     def __str__(self):
+        # TODO: Clean this shit up, it's messy
         modstring = "{}"
         realmods = [x[1] for x in self.type_modifiers if x != ('pointer', '*{}')]
+        prefix = '' # Use this for rewriting struct references to use their typedef version
         pointers = self.type_modifiers.count(('pointer', '*{}'))
         for modifier in realmods:
             modstring = modstring.format(modifier)
+            
+        
         
         definitions = ""
         if 'func_return' not in [y[0] for y in self.type_modifiers] and self.children is not None:
@@ -309,18 +322,26 @@ class DefinitionSymbol(SymbolABC):
             for definition in self.children:
                 if not definition.symbol.is_fake:
                     definitions += "\t" + str(definition.symbol) + "\n"
+                elif self.type_name == 'enum':
+                    definitions += '\n'.join(['\t' + x for x in str.splitlines(str(symdump.SymFile().type_definitions[definition.symbol.tag]))])[0:-1] + " " + definition.symbol.name + ",\n"
                 else:
-                    definitions += '\n'.join(['\t' + x for x in str.splitlines(str(symdump.SymFile().definitions[definition.symbol.tag]))])[0:-1] + " " + definition.symbol.name + ";\n"
+                    definitions += '\n'.join(['\t' + x for x in str.splitlines(str(symdump.SymFile().type_definitions[definition.symbol.tag]))])[0:-1] + " " + definition.symbol.name + ";\n"
             definitions = definitions[0:-1]
             definitions += "\n}"
         
         decl = ''
+        if self.type_name == 'enummember':
+            return self.name + ','
         if 'pointer' in [y[0] for y in self.type_modifiers] and 'func_return' in [y[0] for y in self.type_modifiers]:
             decl = f"{self.type_name} ({'*' * pointers}{self.name}){modstring} "
-        else:
+        elif not self.is_fake:
             decl = f"{self.type_name}{'*'*pointers} {self.name}{modstring}"
+        else:
+            decl = f"{self.type_name}{'*'*pointers} {self.name.replace('.', '__')}{modstring}"
         if not self.is_function:
             decl += definitions
+        if self.is_function and self.cls_name != 'StructMember':
+            decl = self.cls_name.lower() + " " + decl
         decl += ";"
         return decl
         
