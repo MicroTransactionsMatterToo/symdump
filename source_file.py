@@ -14,12 +14,18 @@ class SourceFile:
         self.symbols: List[symdump.symbols.SymbolEntry] = []
         self.lines: Dict[int, List[symdump.symbols.SymbolEntry]] = {}
         self.header_lines: Dict[int, List[symdump.symbols.SymbolEntry]] = {}
+        self.include_files: Dict[str, symdump.symbols.SymbolEntry] = {}
+        self.__file_symbol_count = 0
         self.text_lines: List[str] = [f'#include "{self.basename[:-1]}H"\n']
         self.header_text_lines: List[str] = []
         self.curr_line: int = 0
         self.curr_header_line: int = 0
     
     def add_symbol(self, symbol: symdump.symbols.SymbolEntry):
+        # if self.__file_symbol_count > 1:
+        #     if type(symbol.symbol) is symdump.symbols.DefinitionSymbol and symbol.type_name == 'null':
+        #         self.include_files[symbol.symbol.name] = symbol
+        #     return
         if type(symbol.symbol) is symdump.symbols.SourceLineSymbol:
             if symbol.symbol.dir_type == 6:
                 self.curr_line = symbol.symbol.value
@@ -28,6 +34,9 @@ class SourceFile:
         elif type(symbol.symbol) is symdump.symbols.SourceLineBeginSymbol:
             raise Exception("SourceLineBegin symbol passed to SourceFile")
         else:
+            # if symbol.type_name == 'null':
+            #     self.include_files[symbol.symbol.name] = symbol
+            #     self.__file_symbol_count += 1
             if type(symbol.symbol) is symdump.symbols.FunctionSymbol or (symbol.symbol.cls_name != "Typedef" and ('func_return', '({})') not in symbol.symbol.type_modifiers):
                 if self.lines.get(self.curr_line) is None:
                     self.lines[self.curr_line] = [symbol]
@@ -40,6 +49,7 @@ class SourceFile:
                 else:
                     self.header_lines[self.curr_header_line].append(symbol)
                 self.curr_header_line += 1
+        self.symbols.append(symbol)
 
     
     def set_line(self, line_num):

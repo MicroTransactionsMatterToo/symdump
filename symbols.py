@@ -216,16 +216,22 @@ class FunctionSymbol(SymbolABC):
         while self.children[-1].type & 0x7F != 14:
             self.children += [SymbolEntry(file_input)]
         self.end = FunctionEndSymbol(file_input)
+        if type(self.line) is not Tuple:
+            self.line = (self.line, 0)
 
 
     def __str__(self):
         # TODO: Clean this up, is a mess
         indent_amount = 0
         curr_line = 0
-        func_def = symdump.SymFile().type_definitions[self.name]
+        try:
+            func_def = symdump.SymFile().type_definitions[self.name]
+        except KeyError:
+            return "Function Missing Definition Symbol"
         return_type = ''
         if func_def.type_name == 'struct':
-            return_type = next(typedef for typedef in symdump.SymFile().type_definitions.values() if type(typedef) is ArraySymbol and typedef.tag == func_def.tag).name
+            # return_type = next(typedef for typedef in symdump.SymFile().type_definitions.values() if type(typedef) is ArraySymbol and typedef.tag == func_def.tag).name
+            return_type = re.match(r"^(\w+\s\w+\s[\*|])", str(func_def)[0:-1])[0]
         else:
             return_type = str(func_def.type_name)
         arg_strings = ", ".join([str(x)[:-1] for x in self.args])  # Remove the ; from the normal string represetatoin
@@ -330,7 +336,7 @@ class DefinitionSymbol(SymbolABC):
             definitions += "\n}"
         
         decl = ''
-        if self.type_name == 'enummember':
+        if self.type_name == 'enummember' or self.type_name == 'unionmember':
             return self.name + ','
         if 'pointer' in [y[0] for y in self.type_modifiers] and 'func_return' in [y[0] for y in self.type_modifiers]:
             decl = f"{self.type_name} ({'*' * pointers}{self.name}){modstring} "
