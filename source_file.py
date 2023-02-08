@@ -18,8 +18,13 @@ class SourceFile:
         self.__file_symbol_count = 0
         self.text_lines: List[str] = [f'#include "{self.basename[:-1]}H"\n']
         self.header_text_lines: List[str] = []
+        self.lines_written: bool = False
         self.curr_line: int = 0
         self.curr_header_line: int = 0
+
+    def __str__(self) -> str:
+        self.write_lines()
+        return "".join(self.text_lines)
     
     def add_symbol(self, symbol: symdump.symbols.SymbolEntry):
         # if self.__file_symbol_count > 1:
@@ -37,7 +42,18 @@ class SourceFile:
             # if symbol.type_name == 'null':
             #     self.include_files[symbol.symbol.name] = symbol
             #     self.__file_symbol_count += 1
-            if type(symbol.symbol) is symdump.symbols.FunctionSymbol or (symbol.symbol.cls_name != "Typedef" and ('func_return', '({})') not in symbol.symbol.type_modifiers):
+            if type(symbol.symbol) is symdump.symbols.DefinitionSymbol and symbol.symbol.cls_name == "Filename":
+                if self.lines.get(self.curr_line) is None:
+                    self.lines[self.curr_line] = [symbol]
+                else:
+                    self.lines[self.curr_line].append(symbol)
+                self.curr_line += 1
+                if self.header_lines.get(self.curr_header_line) is None:
+                    self.header_lines[self.curr_header_line] = [symbol]
+                else:
+                    self.header_lines[self.curr_header_line].append(symbol)
+                self.curr_header_line += 1
+            elif type(symbol.symbol) is symdump.symbols.FunctionSymbol or (symbol.symbol.cls_name != "Typedef" and ('func_return', '({})') not in symbol.symbol.type_modifiers):
                 if self.lines.get(self.curr_line) is None:
                     self.lines[self.curr_line] = [symbol]
                 else:
@@ -54,8 +70,51 @@ class SourceFile:
     
     def set_line(self, line_num):
         self.curr_line = line_num
-    
+
+    def write_lines(self):
+        source_obj_name = self.basename[:-1].lower() + 'o'
+        curr_obj_file = self.basename[:-1].lower() + 'o'
+        if self.lines_written:
+            return
+        if len(self.lines.keys()) >= 1:
+            for i, _ in self.lines.items():
+                if self.lines.get(i) is not None:
+                    for entry in self.lines[i]:
+                        if entry.symbol.is_fake:
+                            pass
+                        elif type(entry.symbol) is symdump.symbols.DefinitionSymbol and entry.symbol.cls_name == "Filename":
+                            curr_obj_file = entry.symbol.name
+                        elif curr_obj_file != source_obj_name:
+                            pass
+                        else:
+                            self.text_lines.append(str(entry.symbol) + '\n' if entry.symbol is not None else '')
+                else:
+                    pass
+        source_obj_name = self.basename[:-1].lower() + 'o'
+        curr_obj_file = self.basename[:-1].lower() + 'o'
+        if len(self.header_lines.keys()) >= 1:
+            for i, _ in self.header_lines.items():
+                if self.header_lines.get(i) is not None:
+                    for entry in self.header_lines[i]:
+                        if entry.symbol.is_fake:
+                            pass
+                        elif type(entry.symbol) is symdump.symbols.DefinitionSymbol and entry.symbol.cls_name == "Filename":
+                            curr_obj_file = entry.symbol.name
+                        elif curr_obj_file != source_obj_name:
+                            pass
+                        elif entry.symbol.cls_name == 'Typedef' and not entry.symbol.is_function:
+                            self.header_text_lines.append("typedef " + str(entry.symbol) + '\n' if entry.symbol is not None else '')
+                        else:
+                            self.header_text_lines.append(str(entry.symbol) + '\n' if entry.symbol is not None else '')
+                                
+                else:
+                    pass
+        self.lines_written = True
+
     def write_file(self):
+        if self.lines_written:
+            self.write_out()
+            return
         if len(self.lines.keys()) >= 1:
             for i, _ in self.lines.items():
                 if self.lines.get(i) is not None:
@@ -74,6 +133,7 @@ class SourceFile:
                             
                 else:
                     pass
+        self.lines_written = True
         self.write_out()
     
     def write_out(self, output_dir="output"):

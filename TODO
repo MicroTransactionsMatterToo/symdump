@@ -1,0 +1,4 @@
+- Cleanup str functions, they're pretty messy at the moment
+- Rejig source file generation to use the object file name definitions as boundaries. Not sure whether this will
+    improve output
+- Create a usable CLI tool

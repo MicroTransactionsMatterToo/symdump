@@ -4,6 +4,7 @@ Provides the entry point to a PSX symbol file
 import io
 import struct
 from typing import List, Dict
+from symdump.object_file import ObjectFile
 
 from symdump.symbols import SymbolEntry
 from symdump.source_file import SourceFile
@@ -19,7 +20,9 @@ class Singleton(type):
 class SymFile(metaclass=Singleton):
     def __init__(self, input: io.BytesIO):
         self.input = input
-        self.source_files: Dict[str, List[SourceFile]] = {}
+        self.source_files: Dict[str, SourceFile] = {}
+        self.object_files: Dict[str, ObjectFile] = {}
+        self.function_count = 0
 
         # Seek to start of file just in case
         self.input.seek(0)
@@ -36,6 +39,7 @@ class SymFile(metaclass=Singleton):
         self.type_definitions: Dict[str, syms.DefinitionSymbol] = {}
         for entry in self:
             self.symbols.append(entry)
+        self.functions = {func.name:func for func in self.symbols if type(func.symbol) is syms.FunctionSymbol}
 
     def __next__(self) -> SymbolEntry:
         if self.input.read(1):
@@ -55,9 +59,9 @@ class SymFile(metaclass=Singleton):
     def sourcelines(self):
         return [entry for entry in self.symbols if type(entry.symbol) is syms.SourceLineBeginSymbol or type(entry.symbol) is syms.SourceLineSymbol]
 
-    @property
-    def functions(self):
-        return {func.name:func for func in self.symbols if type(func.symbol) is syms.FunctionSymbol}
+    # @property
+    # def functions(self):
+    #     return {func.name:func for func in self.symbols if type(func.symbol) is syms.FunctionSymbol}
 
     def map_types(self):
         type_defs = [x.symbol for x in self.symbols if type(x.symbol) in [syms.DefinitionSymbol, syms.ArraySymbol]]
@@ -66,6 +70,18 @@ class SymFile(metaclass=Singleton):
                 pass
             else:
                 self.type_definitions[item.name] = item
+
+    def map_obj_files(self):
+        curr_obj_file = ""
+        for entry in self.symbols:
+            if entry.symbol is not None and type(entry.symbol) in [syms.ArraySymbol, syms.DefinitionSymbol] and entry.symbol.cls_name == "Filename":
+                if self.object_files.get(entry.symbol.name) is None:
+                    self.object_files[entry.symbol.name] = ObjectFile(entry.symbol.name)
+                curr_obj_file = entry.symbol.name
+            else:
+                if curr_obj_file != "":
+                    self.object_files[curr_obj_file].children.append(entry)
+                    self.object_files[curr_obj_file].children_names.append(entry.name)
 
 
 

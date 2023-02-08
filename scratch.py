@@ -121,10 +121,6 @@ class SymbolABC:
     @classmethod
     def map_type(cls, type_id: int) -> str: return cls._TYPE_MAPPING[type_id]
 
-    @property
-    def is_fake(self):
-        return False
-
 
 class OverlaySymbol(SymbolABC):
     def __init__(self, file_input: io.BytesIO):
@@ -246,7 +242,6 @@ class FunctionSymbol(SymbolABC):
 
     def __str__(self):
         # TODO: Clean this up, is a mess
-        object_files = [file for file, obj in symdump.SymFile().object_files.items() if self.name in obj.children_names]
         indent_amount = 0
         curr_line = 0
         try:
@@ -275,12 +270,11 @@ class FunctionSymbol(SymbolABC):
         blocks.seek(0)
         out = """{return_type} {func_name}({args}) {{
 \t{blocks}
-}} /* found in: {obj} */""".format(
+}}""".format(
     return_type = return_type,
     func_name = self.name,
     args=arg_strings,
-    blocks="\t".join(blocks.readlines()[:-1]),
-    obj=object_files
+    blocks="\t".join(blocks.readlines()[:-1])
     )
         return out
 
@@ -338,69 +332,63 @@ class DefinitionSymbol(SymbolABC):
         return hash((self.cls, self.sz, self._type, self.name))
 
     def __str__(self):
-        if self.type_name == "null":
-            return f"/* {self.name} */"
-        else:
-            return f"{self._fmt_type()} {self._fmt_name()}{self._fmt_brackets()}{self._fmt_body()}{'' if self.cls_name in ['Argument', 'RegParam'] else ';'}{self._fmt_comment()}"
+      # TODO: Clean this shit up, it's messy
+        modstring = "{}"
+        realmods = [x[1] for x in self.type_modifiers if x != ('pointer', '*{}')]
+        prefix = '' # Use this for rewriting struct references to use their typedef version
+        pointers = self.type_modifiers.count(('pointer', '*{}'))
+        for modifier in realmods:
+            modstring = modstring.format(modifier)
 
-        
-    def _fmt_body(self):
-        # Format definitions that have a body, but are not functions (structs, enums, e.t.c)
-        if not self.is_function and self.children is not None and not self.is_function_ptr:
+                
+            
+        if self.type_name == 'null':
+            return ''
+            
+        definitions = ""
+        if 'func_return' not in [y[0] for y in self.type_modifiers] and self.children is not None:
             definitions = " {\n"
             for definition in self.children:
                 if not definition.symbol.is_fake:
-                    definitions += f"\t{str(definition)}\n"
+                    definitions += "\t" + str(definition.symbol) + "\n"
                 elif self.type_name == 'enum':
                     definitions += '\n'.join(['\t' + x for x in str.splitlines(str(symdump.SymFile().type_definitions[definition.symbol.tag]))])[0:-1] + " " + definition.symbol.name + ",\n"
                 else:
                     definitions += '\n'.join(['\t' + x for x in str.splitlines(str(symdump.SymFile().type_definitions[definition.symbol.tag]))])[0:-1] + " " + definition.symbol.name + ";\n"
             definitions = definitions[0:-1]
             definitions += "\n}"
-            return definitions
-        return ""
-    
-    def _fmt_brackets(self):
-        if self.type_name in ['enummember', 'unionmember']:
-            return ""
-        elif self.is_function:
-            if symdump.SymFile().functions.get(self.name) is not None:
-                function_def = symdump.SymFile().functions[self.name]
-                arg_string = [str(x) for x in symdump.SymFile().functions[self.name].symbol.args]
-                arg_string = [re.sub(r"\s?\;\t\/\*.*", "", x) for x in arg_string] 
-                return f"({', '.join(arg_string)})"
-            else:
-                return "()"
+            
+        decl = ''
+        if self.type_name == 'enummember' or self.type_name == 'unionmember':
+            return self.name + ','
+        if 'pointer' in [y[0] for y in self.type_modifiers] and [y[0] for y in self.type_modifiers].count("func_return") > 1 and self.name in symdump.SymFile().functions.keys():
+            arg_string = [str(x) for x in symdump.SymFile().functions[self.name].symbol.args]
+            arg_string = [re.sub(r"\s?\;\t\/\*.*", "", x) for x in arg_string]
+            arg_string = ", ".join(arg_string)
+            decl = f"{self.type_name} ({'*' * pointers}{self.name})({arg_string}) "
+        elif 'pointer' in [y[0] for y in self.type_modifiers] and 'func_return' in [y[0] for y in self.type_modifiers] and self.cls_name == "RegParam":
+            decl = f"{self.type_name} ({'*'*pointers} {self.name}"
+        elif not self.is_fake:
+            decl = f"{self.type_name}{'*'*pointers} {self.name}{modstring}"
         else:
-            return ""
-    
-    def _fmt_name(self):
-        if self.is_function_ptr:
-            return f"({'*'*self.pointer_num}{self.name})"
-        elif self.is_fake:
-            return ""
-        elif self.cls_name == "Bitfield":
-            return f"{self.name}:{self.sz}"
-        else:
-            return self.name
-    
-    def _fmt_type(self):
-        if self.is_function_ptr:
-            return self.type_name
-        elif self.type_name in ["enummember", "unionmember"]:
-            return ""
-        elif self.is_function and self.cls_name not in ["StructMember", "Typedef", "RegParam"]:
-            return f"{self.cls_name.lower() if self.cls_name not in ['Argument'] else ''} {self.type_name}"
-        else:
-            return self.type_name + '*' * self.pointer_num
-
-    def _fmt_comment(self):
+            decl = f"{self.type_name}{'*'*pointers} {modstring}"
+        if not self.is_function:
+            decl += definitions
+        if self.is_function and self.cls_name not in ['StructMember', "Typedef", "RegParam", "Argument"]:
+            decl = self.cls_name.lower() + " " + decl
+        if self.cls_name == "Typedef":
+            decl.replace("typedef ", "")
+            decl = "typedef " + decl
+        if self.cls_name == "Bitfield":
+            decl += f": {self.sz}"
+        decl += ";"
         if self.entry.value < len(_REGISTERS) and not self.is_fake and self.cls_name not in ["StructMember", "Bitfield", "UnionMember"]:
-            return f"\t/* ${_REGISTERS[self.entry.value]} */"
-        elif self.cls_name in ["StructMember", "Bitfield", "UnionMember"]:
-            return f"\t/* size: {self.sz}, offset: {self.entry.value} */"
-        else:
-            return ""
+            decl += f"\t/* ${_REGISTERS[self.entry.value]} */"
+        if self.cls_name in ["StructMember", "Bitfield", "UnionMember"]:
+            decl += f"\t/* size: {self.sz}, offset: {self.entry.value} */"
+        return decl
+        
+
 
     def __repr__(self):
         return "<Definition {name}[{type_name}<{modifiers}>](cls:{cls},sz:{sz},defs:{defs})".format(
@@ -412,9 +400,52 @@ class DefinitionSymbol(SymbolABC):
             defs=f"<List sz={len(self.children)}>" if self.children is not None else None
         )
 
-    @property
-    def pointer_num(self):
-        return self.type_modifiers.count(('pointer', '*{}'))
+    def _fmt_body(self):
+        # Format definitions that have a body, but are not functions (structs, enums, e.t.c)
+        if not self.is_function and self.children is not None and not self.is_function_ptr:
+            definitions = " {\n"
+            for definition in self.children:
+                if not definition.symbol.is_fake:
+                    definitions += f"\t{str(definition)}\n"
+                else:
+                    enum_body = '\n'.join(['\t' + x for x in str.splitlines(str(symdump.SymFile().type_definitions[definition.symbol.tag]))])[0:-1]
+            definitions += f"{enum_body} {definition.symbol.name}" + ',\n' if self.type_name == 'enum' else ';\n'
+            definitions = definitions[0:-1]
+            definitions += "\n}"
+            return definitions
+    
+    def _fmt_brackets(self):
+        if self.type_name in ['enummember', 'unionmember']:
+            return ""
+        elif self.is_function:
+            if symdump.SymFile().functions.get(self.name) is not None:
+                arg_string = [str(x) for x in symdump.SymFile().functions[self.name].symbol.args]
+                arg_string = [re.sub(r"\s?\;\t\/\*.*", "", x) for x in arg_string] 
+                return f"({', '.join(arg_string)})"
+            else:
+                return "()"
+        else:
+            return ""
+    
+    def _fmt_name(self):
+        if self.is_function_ptr:
+            return f"({'*'*self.pointer_num}{self.name})"
+        else:
+            return self.name
+    
+    def _fmt_type(self):
+        if self.is_function_ptr:
+            return self.type_name
+        elif self.type_name in ["enummember", "unionmember"]:
+            return ""
+        elif self.is_function and self.cls_name not in ["StructMember", "Typedef", "RegParam"]:
+            return f"{self.cls_name.lower() if self.cls_name not in ['Argument'] else ''} {self.type_name}"
+        else:
+            return self.type_name
+        
+                    
+    
+
 
     @property
     def is_fake(self):
@@ -423,14 +454,14 @@ class DefinitionSymbol(SymbolABC):
     @property
     def is_function(self):
         return ('func_return', '({})') in self.type_modifiers
-
+    
+    @property
+    def pointer_num(self):
+        return self.type_modifiers.count(('pointer', '*{}'))
+    
     @property
     def is_function_ptr(self):
-        if symdump.SymFile().functions.get(self.name) is not None:
-            return self.type_modifiers.count(('func_return', '({})')) >= 2 and self.pointer_num >= 1
-        else:
-            return self.type_modifiers.count(('func_return', '({})')) >= 1 and self.pointer_num >= 1
-
+        return self.type_modifiers.count(('func_return', '({}')) > 1 and self.pointer_num >= 1
 
 
 class SourceLineBeginSymbol(SymbolABC):
@@ -520,7 +551,6 @@ class SymbolEntry:
             self.symbol = _TYPE_MAPPING[self.type & 0x7F](file_input)
         if self.symbol is not None:
             self.symbol.entry = self
-        
 
     def __repr__(self):
         return "<SymbolEntry(val:0x{:x},loc:{},type:{},label:{},symbol:{}>".format(
